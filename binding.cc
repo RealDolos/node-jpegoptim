@@ -52,7 +52,7 @@ class ErrorManager : public jpeg_error_mgr {
 
   static void error(j_common_ptr info)
   {
-    ErrorManager* err = reinterpret_cast<ErrorManager*>(info->err);
+    const auto err = reinterpret_cast<ErrorManager*>(info->err);
     if (!err) {
       return;
     }
@@ -90,7 +90,7 @@ class ErrorManager : public jpeg_error_mgr {
 
   inline operator bool() const
   {
-    return ok_;
+    return !ok_;
   }
 
   inline const char* msg() const
@@ -105,7 +105,8 @@ class Decompress : public jpeg_decompress_struct {
  public:
   explicit Decompress(ErrorManager* errmgr, const StripFlags flags)
   {
-    jpeg_create_decompress(this);
+    err = errmgr;
+    jpeg_create_decompress(static_cast<jpeg_decompress_struct*>(this));
     if ((flags & StripMeta) != StripMeta) {
       jpeg_save_markers(this, JPEG_APP0 + 1, 0xffff);  // EXIF / XMP
       jpeg_save_markers(this, JPEG_APP0 + 13, 0xffff);  // IPTC
@@ -113,7 +114,6 @@ class Decompress : public jpeg_decompress_struct {
     if ((flags & StripICC) != StripICC) {
       jpeg_save_markers(this, JPEG_APP0 + 2, 0xffff);  // ICC
     }
-    err = errmgr;
   }
 
   explicit Decompress(const Decompress&) = delete;
@@ -466,7 +466,7 @@ class Optimizer : public Nan::AsyncWorker {
 
     for (const auto& m : mrks) {
       jpeg_write_marker(compress_.get(), m->marker, m->data, m->data_length);
-      if (!err) {
+      if (err) {
         compress_.reset();
         SetErrorMessage(err.msg());
         return false;
@@ -479,17 +479,17 @@ class Optimizer : public Nan::AsyncWorker {
   void Execute() final
   {
     ErrorManager err;
-    Decompress dec(&err, flags_);
     if (setjmp(err.setjmp_buffer)) {
-      if (!err) {
+      if (err) {
         return SetErrorMessage(err.msg());
       }
       return SetErrorMessage("Invalid Image");
     }
 
+    Decompress dec(&err, flags_);
     dec.init(buffer_, len_);
     auto coefs = jpeg_read_coefficients(&dec);
-    if (!err) {
+    if (err) {
       return SetErrorMessage(err.msg());
     }
     if (!coefs) {
@@ -503,7 +503,7 @@ class Optimizer : public Nan::AsyncWorker {
       compress_ = std::make_unique<Compress>(dec, len_);
     }
     compress_->init(coefs);
-    if (!err) {
+    if (err) {
       compress_.reset();
       SetErrorMessage(err.msg());
       return;
@@ -514,7 +514,7 @@ class Optimizer : public Nan::AsyncWorker {
     }
 
     compress_->finish();
-    if (!err) {
+    if (err) {
       compress_.reset();
       SetErrorMessage(err.msg());
       return;
