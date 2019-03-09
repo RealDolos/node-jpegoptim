@@ -6,7 +6,7 @@
         ],
         "include_dirs": [
             "<!(node -e \"require('nan')\")",
-            "<!@(pkg-config --cflags-only-I libjpeg)",
+            "<!@(pkg-config --cflags-only-I libjpeg | sed s/-I//g)",
         ],
         "cflags_cc": [
             "-Wstrict-aliasing",
