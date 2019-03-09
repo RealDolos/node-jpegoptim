@@ -13,8 +13,8 @@ The API is really simple: there is only one function (default export of the modu
 
 `jpegoptim(buf, [options]`)
  * `@param {Buffer} buf` Buffer containing the JPEG to optimize
- * `@param {Object} [options] Some options for you.
- * `@param {Buffer|Number}` [options.out]
+ * `@param {Object} [options]` Some options for you.
+ * `@param {Buffer|Number} [options.out]`
     Either the output buffer to use. The result is the used slice.
     Or a number limitting the buffer size.
     If omitted, a new Buffer without upper bound for the size is returned.
