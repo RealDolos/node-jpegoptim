@@ -1,7 +1,9 @@
 {
   "name": "@dolos/jpegoptim",
-  "version": "0.2.0",
-  "os": ["!win32"],
+  "version": "0.3.0",
+  "os": [
+    "!win32"
+  ],
   "description": " Optimize JPEGs in memory",
   "keywords": [
     "image processing",
