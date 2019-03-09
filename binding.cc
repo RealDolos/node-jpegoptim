@@ -49,6 +49,7 @@ enum StripFlags : uint32_t {
 class ErrorManager : public jpeg_error_mgr {
   std::string errmsg_{};
   bool ok_{true};
+  bool invalid_{false};
 
   static void error(j_common_ptr info)
   {
@@ -57,14 +58,24 @@ class ErrorManager : public jpeg_error_mgr {
       return;
     }
     err->ok_ = false;
-    if (err->msg_code == JERR_CANT_SUSPEND) {
+    switch (err->msg_code) {
+    case JERR_NO_HUFF_TABLE:
+    case JERR_NO_IMAGE:
+    case JERR_NO_QUANT_TABLE:
+    case JERR_NO_SOI:
+      err->errmsg_ = "Invalid image data";
+      err->invalid_ = true;
+      break;
+    case JERR_CANT_SUSPEND:
       err->errmsg_ = "Buffer too small";
-    }
-    else {
+      break;
+    default: {
       char buffer[JMSG_LENGTH_MAX];
       *buffer = 0;
       err->format_message(info, buffer);
       err->errmsg_ = buffer;
+      break;
+    }
     }
     longjmp(err->setjmp_buffer, 1);
   }
@@ -91,6 +102,11 @@ class ErrorManager : public jpeg_error_mgr {
   inline operator bool() const
   {
     return !ok_;
+  }
+
+  inline bool invalid() const
+  {
+    return invalid_;
   }
 
   inline const char* msg() const
@@ -373,6 +389,7 @@ class Optimizer : public Nan::AsyncWorker {
   size_t outlen_{};
 
   const StripFlags flags_;
+  bool invalid_{false};
 
   static uint8_t* Data(Local<ArrayBufferView>& buffer)
   {
@@ -480,6 +497,7 @@ class Optimizer : public Nan::AsyncWorker {
   {
     ErrorManager err;
     if (setjmp(err.setjmp_buffer)) {
+      invalid_ = err.invalid();
       if (err) {
         return SetErrorMessage(err.msg());
       }
@@ -563,7 +581,9 @@ class Optimizer : public Nan::AsyncWorker {
     GetFromPersistent("buf");
     GetFromPersistent("out");
     auto resolver = GetFromPersistent("res").As<Promise::Resolver>();
-    auto err = Nan::Error(ErrorMessage());
+    auto err = Nan::Error(ErrorMessage()).As<Object>();
+    Nan::DefineOwnProperty(
+        err, Nan::New("invalid").ToLocalChecked(), Nan::New(invalid_));
     resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
   }
 };

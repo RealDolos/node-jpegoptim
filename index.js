@@ -56,9 +56,15 @@ async function optimize(buf, options = {}) {
     return await _optimize(buf, flags);
   }
   catch (ex) {
+    const {invalid = false} = ex;
     if (!(ex instanceof RangeError || ex instanceof TypeError)) {
-      throw new OptimizeError(ex.message || ex);
+      // eslint-disable-next-line no-ex-assign
+      ex = new OptimizeError(ex.message || ex);
     }
+    Object.defineProperty(ex, "invalid", {
+      value: invalid,
+      enumerable: true,
+    });
     throw ex;
   }
 }
