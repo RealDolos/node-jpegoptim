@@ -138,7 +138,7 @@ class Decompress : public jpeg_decompress_struct {
 };
 
 class MemoryDestination : public jpeg_destination_mgr {
-  static constexpr size_t buffer_grows{1 << 14};
+  static constexpr size_t buffer_growth{1 << 14};
 
   uint8_t* buffer_;
   size_t size_{0};
@@ -165,7 +165,7 @@ class MemoryDestination : public jpeg_destination_mgr {
       return 0;
     }
     dest->size_ = dest->capacity_ - dest->free_in_buffer;
-    auto newcap = dest->capacity_ + buffer_grows;
+    auto newcap = dest->capacity_ + buffer_growth;
     auto newbuf = (uint8_t*)realloc(dest->buffer_, newcap);
     if (!newbuf) {
       return 0;
@@ -173,7 +173,7 @@ class MemoryDestination : public jpeg_destination_mgr {
     dest->buffer_ = newbuf;
     dest->capacity_ = newcap;
     dest->next_output_byte = dest->buffer_ + dest->size_;
-    dest->free_in_buffer = buffer_grows;
+    dest->free_in_buffer = buffer_growth;
     return 1;
   }
 
@@ -187,7 +187,7 @@ class MemoryDestination : public jpeg_destination_mgr {
     if (!dest->managed_) {
       return;
     }
-    if (dest->free_in_buffer < buffer_grows) {
+    if (dest->free_in_buffer < buffer_growth) {
       return;
     }
     auto newbuf = (uint8_t*)realloc(dest->buffer_, dest->size_);
@@ -205,7 +205,7 @@ class MemoryDestination : public jpeg_destination_mgr {
     init_destination = init;
     empty_output_buffer = empty;
     term_destination = term;
-    memhint = ((memhint / buffer_grows) + 1) * buffer_grows;
+    memhint = ((memhint / buffer_growth) + 1) * buffer_growth;
     buffer_ = (uint8_t*)malloc(memhint);
     capacity_ = buffer_ ? memhint : 0;
   }
