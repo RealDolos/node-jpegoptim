@@ -16,7 +16,9 @@ async function main() {
   const input = await readFile(infile, {encoding: null});
 
   // Actually optimize
-  const optimized = await jopt(input, {strip: true});
+  const optimized = await jopt(input, {
+    stripThumbnail: jopt.supportsThumbnailStripping
+  });
 
   await writeFile(outfile, optimized, {encoding: null});
   const diff = input.byteLength - optimized.byteLength;

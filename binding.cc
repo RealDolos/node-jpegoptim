@@ -477,6 +477,24 @@ NAN_MODULE_INIT(InitAll)
   Nan::Set(
       target, Nan::New("_optimize").ToLocalChecked(),
       Nan::GetFunction(Nan::New<FunctionTemplate>(optimize)).ToLocalChecked());
+
+  Local<Object> versions = Nan::New<Object>();
+  jpegoptim::ErrorManager err;
+
+  std::string jversion{err.jpeg_message_table[JMSG_VERSION]};
+  Nan::Set(
+    versions, Nan::New("JPEG_VERSION").ToLocalChecked(), Nan::New(jversion).ToLocalChecked());
+
+  std::string jcopy{err.jpeg_message_table[JMSG_COPYRIGHT]};
+  Nan::Set(
+    versions, Nan::New("JPEG_COPYRIGHT").ToLocalChecked(), Nan::New(jcopy).ToLocalChecked());
+
+#ifdef HAS_EXIF
+  Nan::Set(
+    versions, Nan::New("LIBEXIF_VERSION").ToLocalChecked(), Nan::New("Unknown").ToLocalChecked());
+#endif
+
+  Nan::Set(target, Nan::New("_versions").ToLocalChecked(), versions);
 }
 
 NODE_MODULE(binding, InitAll)

@@ -1,6 +1,6 @@
 "use strict";
 
-const {_optimize} = require("./build/Release/binding");
+const {_optimize, _versions} = require("./build/Release/binding");
 
 const StripNone = 0;
 const StripMeta = 1 << 0;
@@ -34,9 +34,14 @@ Object.defineProperty(OptimizeError.prototype, "name", {
  *   Strip any EXIF thumbnail present in the image metadata. Requires that this
  *   module was compiled against libexif.
  * @returns {Promise<Buffer>} The optimized jpeg.
+ *
  * @throws TypeError
  * @throws RangeError
  * @throws OptimizeError
+ *
+ * @property {OptimizeError} OptimizeError Reference to OptimizeError
+ * @property {Object} versions Library version of libjpeg etc
+ * @property {Boolean} supportsThumbnailStripping Does this build support it?
  */
 async function optimize(buf, options = {}) {
   const {strip = false, stripICC = false, stripThumbnail = false} = options;
@@ -76,8 +81,9 @@ async function optimize(buf, options = {}) {
   }
 }
 
-module.exports = optimize.bind(null);
-Object.assign(module.exports, {
+module.exports = Object.freeze(Object.assign(optimize, {
   optimize,
-  OptimizeError
-});
+  OptimizeError,
+  versions: _versions,
+  supportsThumbnailStripping: "LIBEXIF_VERSION" in _versions,
+}, _versions));

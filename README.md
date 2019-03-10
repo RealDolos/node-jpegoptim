@@ -44,6 +44,11 @@ The API is really simple: there is only one function (default export of the modu
  * `@throws TypeError`
  * `@throws RangeError`
  * `@throws OptimizeError`
+
+Additionally `jpegoptim` has the following properties
+ * `@property {OptimizeError} OptimizeError` Reference to OptimizeError
+ * `@property {Object} versions` Library version of libjpeg etc
+ * `@property {Boolean} supportsThumbnailStripping` Does this build support it?
  
  See [sample.js](sample.js) for a small program demonstrating the use.
 
