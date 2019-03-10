@@ -1,16 +1,19 @@
 #include <algorithm>
+#include <cinttypes>
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
-#include <stdexcept>
 #include <vector>
 
-#include <inttypes.h>
-#include <setjmp.h>
 #include <sys/types.h>
 #include <unistd.h>
 
 #include <jerror.h>
 #include <jpeglib.h>
+
+#ifdef HAS_EXIF
+#  include <libexif/exif-data.h>
+#endif
 
 #include <nan.h>
 
@@ -44,6 +47,7 @@ enum StripFlags : uint32_t {
   StripNone = 0,
   StripMeta = 1 << 0,
   StripICC = 1 << 1,
+  StripThumbnail = 1 << 2,
 };
 
 class ErrorManager : public jpeg_error_mgr {
@@ -83,9 +87,9 @@ class ErrorManager : public jpeg_error_mgr {
   static void message(j_common_ptr info) {}
 
  public:
-  jmp_buf setjmp_buffer;
+  jmp_buf setjmp_buffer{};
 
-  explicit ErrorManager()
+  explicit ErrorManager() : jpeg_error_mgr{}
   {
     jpeg_std_error(this);
     error_exit = error;
@@ -99,7 +103,7 @@ class ErrorManager : public jpeg_error_mgr {
 
   ~ErrorManager() = default;
 
-  inline operator bool() const
+  explicit inline operator bool() const
   {
     return !ok_;
   }
@@ -119,15 +123,17 @@ class Decompress : public jpeg_decompress_struct {
   bool inited_{false};
 
  public:
-  explicit Decompress(ErrorManager* errmgr, const StripFlags flags)
+  explicit Decompress(
+      ErrorManager* errmgr, const bool stripMeta, const bool stripICC)
+      : jpeg_decompress_struct{}
   {
     err = errmgr;
     jpeg_create_decompress(static_cast<jpeg_decompress_struct*>(this));
-    if ((flags & StripMeta) != StripMeta) {
+    if (!stripMeta) {
       jpeg_save_markers(this, JPEG_APP0 + 1, 0xffff);  // EXIF / XMP
       jpeg_save_markers(this, JPEG_APP0 + 13, 0xffff);  // IPTC
     }
-    if ((flags & StripICC) != StripICC) {
+    if (!stripICC) {
       jpeg_save_markers(this, JPEG_APP0 + 2, 0xffff);  // ICC
     }
   }
@@ -145,7 +151,7 @@ class Decompress : public jpeg_decompress_struct {
     jpeg_destroy_decompress(this);
   }
 
-  void init(const uint8_t* buffer, size_t len)
+  void init(const uint8_t* buffer, const size_t len)
   {
     jpeg_mem_src(this, buffer, len);
     jpeg_read_header(this, 1);
@@ -216,7 +222,8 @@ class MemoryDestination : public jpeg_destination_mgr {
   }
 
  public:
-  explicit MemoryDestination(size_t memhint) : managed_{true}
+  explicit MemoryDestination(size_t memhint)
+      : jpeg_destination_mgr{}, managed_{true}
   {
     init_destination = init;
     empty_output_buffer = empty;
@@ -226,8 +233,11 @@ class MemoryDestination : public jpeg_destination_mgr {
     capacity_ = buffer_ ? memhint : 0;
   }
 
-  explicit MemoryDestination(uint8_t* buffer, size_t capacity)
-      : buffer_{buffer}, capacity_{capacity}, managed_{false}
+  explicit MemoryDestination(uint8_t* buffer, const size_t capacity)
+      : jpeg_destination_mgr{},
+        buffer_{buffer},
+        capacity_{capacity},
+        managed_{false}
   {
     init_destination = init;
     empty_output_buffer = empty;
@@ -294,7 +304,8 @@ class Compress : public jpeg_compress_struct {
   }
 
   explicit Compress(Decompress& dec, uint8_t* buffer, size_t capacity)
-      : dst_{std::make_unique<MemoryDestination>(buffer, capacity)}
+      : jpeg_compress_struct{},
+        dst_{std::make_unique<MemoryDestination>(buffer, capacity)}
   {
     jpeg_create_compress(this);
 
@@ -388,8 +399,14 @@ class Optimizer : public Nan::AsyncWorker {
   uint8_t* outbuf_{};
   size_t outlen_{};
 
-  const StripFlags flags_;
+#ifdef HAS_EXIF
+  std::string replacementExif{};
+#endif
+
   bool invalid_{false};
+  bool stripMeta_;
+  bool stripICC_;
+  bool stripThumb_;
 
   static uint8_t* Data(Local<ArrayBufferView>& buffer)
   {
@@ -406,7 +423,9 @@ class Optimizer : public Nan::AsyncWorker {
       : Nan::AsyncWorker(nullptr, "jpegoptimize"),
         buffer_{Data(buf)},
         len_{buf->ByteLength()},
-        flags_{flags}
+        stripMeta_{(flags & StripMeta) == StripMeta},
+        stripICC_{(flags & StripICC) == StripICC},
+        stripThumb_{(flags & StripThumbnail) == StripThumbnail}
   {
     SaveToPersistent("buf", buf);
     SaveToPersistent("res", res);
@@ -425,15 +444,13 @@ class Optimizer : public Nan::AsyncWorker {
 
   bool CopyMarkers(ErrorManager& err, Decompress& dec)
   {
-    const auto stripMeta = (flags_ & StripMeta) == StripMeta;
-    const auto stripICC = (flags_ & StripICC) == StripICC;
     auto marker = dec.marker_list;
     auto sawICC{false};
     std::vector<decltype(marker)> mrks;
     while (marker) {
       switch (marker->marker) {
       case JPEG_APP0 + 1:
-        if (stripMeta) {
+        if (stripMeta_) {
           break;
         }
         if (marker->data_length > TAG_EXIF_LEN &&
@@ -448,7 +465,7 @@ class Optimizer : public Nan::AsyncWorker {
         break;
 
       case JPEG_APP0 + 2:
-        if (stripICC) {
+        if (stripICC_) {
           break;
         }
         if (sawICC ||
@@ -460,7 +477,7 @@ class Optimizer : public Nan::AsyncWorker {
         break;
 
       case JPEG_APP0 + 13:
-        if (stripMeta) {
+        if (stripMeta_) {
           break;
         }
         if (marker->data_length > TAG_IPTC_LEN &&
@@ -482,7 +499,18 @@ class Optimizer : public Nan::AsyncWorker {
         });
 
     for (const auto& m : mrks) {
-      jpeg_write_marker(compress_.get(), m->marker, m->data, m->data_length);
+#ifdef HAS_EXIF
+      if (m->marker == JPEG_APP0 + 1 && !replacementExif.empty()) {
+        jpeg_write_marker(
+            compress_.get(), m->marker, (const uint8_t*)replacementExif.data(),
+            replacementExif.size());
+        replacementExif.clear();
+      }
+      else
+#endif
+      {
+        jpeg_write_marker(compress_.get(), m->marker, m->data, m->data_length);
+      }
       if (err) {
         compress_.reset();
         SetErrorMessage(err.msg());
@@ -504,9 +532,40 @@ class Optimizer : public Nan::AsyncWorker {
       return SetErrorMessage("Invalid Image");
     }
 
-    Decompress dec(&err, flags_);
+#ifdef HAS_EXIF
+    if (!stripMeta_ && stripThumb_) {
+      struct ed {
+        void operator()(ExifData* d)
+        {
+          if (d) {
+            exif_data_unref(d);
+          }
+        }
+      };
+      std::unique_ptr<ExifData, ed> exif(
+          exif_data_new_from_data(buffer_, len_));
+      if (exif && exif->data && exif->size) {
+        free(exif->data);
+        exif->data = NULL;
+        exif->size = 0;
+        exif_data_fix(exif.get());
+
+        unsigned char* data;
+        unsigned int len;
+        exif_data_save_data(exif.get(), &data, &len);
+        if (data && len) {
+          replacementExif = std::string((char*)data, len);
+        }
+        if (data) {
+          free(data);
+        }
+      }
+    }
+#endif
+
+    Decompress dec(&err, stripMeta_, stripICC_);
     dec.init(buffer_, len_);
-    auto coefs = jpeg_read_coefficients(&dec);
+    const auto coefs = jpeg_read_coefficients(&dec);
     if (err) {
       return SetErrorMessage(err.msg());
     }
@@ -606,6 +665,12 @@ NAN_METHOD(optimize)
   }
 
   const auto flags = (StripFlags)Nan::To<uint32_t>(info[1]).FromJust();
+#ifndef HAS_EXIF
+  if ((flags & StripThumbnail) == StripThumbnail) {
+    return Nan::ThrowRangeError(
+        "node-jpegoptim was compiled without libexif support; cannot stripThumbnail");
+  }
+#endif
 
   MaybeLocal<ArrayBufferView> outbuf;
   if (info.Length() > 2) {

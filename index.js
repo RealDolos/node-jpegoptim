@@ -5,6 +5,7 @@ const {_optimize} = require("./build/Release/binding");
 const StripNone = 0;
 const StripMeta = 1 << 0;
 const StripICC = 1 << 1;
+const StripThumbnail = 1 << 2;
 
 /**
  * Something bad happened
@@ -29,19 +30,23 @@ Object.defineProperty(OptimizeError.prototype, "name", {
  *   already optimized files, which can lead to slight growing in size.
  * @param {Boolean} [options.strip] Strip all meta data.
  * @param {Boolean} [options.stripICC] Strip all ICC profile data.
+ * @param {Boolean} [options.StripThumbnail] Strip the EXIF thumbnail, if any
  * @returns {Promise<Buffer>} The optimized jpeg.
  * @throws TypeError
  * @throws RangeError
  * @throws OptimizeError
  */
 async function optimize(buf, options = {}) {
-  const {strip = false, stripICC = false} = options;
+  const {strip = false, stripICC = false, stripThumbnail = false} = options;
   let flags = StripNone;
   if (strip) {
     flags |= StripMeta;
   }
   if (stripICC) {
     flags |= StripICC;
+  }
+  if (stripThumbnail) {
+    flags |= StripThumbnail;
   }
 
   let {out} = options;
