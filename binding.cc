@@ -438,7 +438,7 @@ NAN_METHOD(optimize)
   const auto flags =
       static_cast<jpegoptim::StripFlags>(Nan::To<uint32_t>(info[1]).FromJust());
 #ifndef HAS_EXIF
-  if ((flags & StripThumbnail) == StripThumbnail) {
+  if ((flags & jpegoptim::StripThumbnail) == jpegoptim::StripThumbnail) {
     return Nan::ThrowRangeError(
         "node-jpegoptim was compiled without libexif support; cannot stripThumbnail");
   }

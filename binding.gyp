@@ -1,6 +1,6 @@
 {
     "variables": {
-        "exif": "<!(pkg-config --exists libexif && echo yes)",
+        "exif": "<!(pkg-config --exists libexif && echo yes || echo no)",
     },
     "targets": [{
         "target_name": "binding",
