@@ -11,7 +11,7 @@ Also allows to strip metadata (EXIF, IPTC, XMP) segments and/or ICC profile segm
 
 The API is really simple: there is only one function (default export of the module) and one custom error type.
 
-`jpegoptim(buf, [options]`)
+`jpegoptim(buf, [options])`
  * `@param {Buffer} buf` Buffer containing the JPEG to optimize
  * `@param {Object} [options]` Some options for you.
  * `@param {Buffer|Number} [options.out]`
