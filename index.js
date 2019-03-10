@@ -30,7 +30,9 @@ Object.defineProperty(OptimizeError.prototype, "name", {
  *   already optimized files, which can lead to slight growing in size.
  * @param {Boolean} [options.strip] Strip all meta data.
  * @param {Boolean} [options.stripICC] Strip all ICC profile data.
- * @param {Boolean} [options.StripThumbnail] Strip the EXIF thumbnail, if any
+ * @param {Boolean} [options.stripThumbnail]
+ *   Strip any EXIF thumbnail present in the image metadata. Requires that this
+ *   module was compiled against libexif.
  * @returns {Promise<Buffer>} The optimized jpeg.
  * @throws TypeError
  * @throws RangeError
