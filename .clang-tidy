@@ -1,0 +1,3 @@
+---
+Checks: "*,-fuchsia*,-cppcoreguidelines-owning-memory,-llvm-header-guard,-hicpp-no-malloc,-cppcoreguidelines-no-malloc,-google-runtime-references,-*-array*-decay,-cppcoreguidelines-pro-*"
+...

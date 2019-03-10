@@ -1,21 +1,7 @@
 #include <algorithm>
-#include <cinttypes>
-#include <csetjmp>
-#include <cstdio>
-#include <cstring>
 #include <vector>
 
-#include <sys/types.h>
-#include <unistd.h>
-
-#include <jerror.h>
-#include <jpeglib.h>
-
-#ifdef HAS_EXIF
-#  include <libexif/exif-data.h>
-#endif
-
-#include <nan.h>
+#include "binding.hh"
 
 using v8::ArrayBufferView;
 using v8::FunctionTemplate;
@@ -29,328 +15,33 @@ using v8::Promise;
 using v8::WeakCallbackInfo;
 using v8::WeakCallbackType;
 
-namespace {
+#ifdef __GNUC__
+#  pragma GCC visibility push(hidden)
+#endif
 
+namespace {
 constexpr const char TAG_EXIF[] = "Exif\0\0";
-constexpr const size_t TAG_EXIF_LEN = 6;
+constexpr const size_t TAG_EXIF_LEN = sizeof(TAG_EXIF);
 
 constexpr const char TAG_XMP[] = "http://ns.adobe.com/xap/1.0/\0";
-constexpr const size_t TAG_XMP_LEN = 29;
+constexpr const size_t TAG_XMP_LEN = sizeof(TAG_XMP);
 
 constexpr const char TAG_ICC[] = "ICC_PROFILE\0";
-constexpr const size_t TAG_ICC_LEN = 12;
+constexpr const size_t TAG_ICC_LEN = sizeof(TAG_ICC);
 
-constexpr const char TAG_IPTC[] = "\0x1c";
-constexpr const size_t TAG_IPTC_LEN = 1;
+constexpr const char TAG_IPTC[] = "\x1c";
+constexpr const size_t TAG_IPTC_LEN = sizeof(TAG_IPTC);
 
-enum StripFlags : uint32_t {
-  StripNone = 0,
-  StripMeta = 1 << 0,
-  StripICC = 1 << 1,
-  StripThumbnail = 1 << 2,
-};
+uint8_t* BufferData(Local<ArrayBufferView>& buffer)
+{
+  auto d = buffer->Buffer()->GetContents().Data();
+  return reinterpret_cast<uint8_t*>(d) + buffer->ByteOffset();
+}
 
-class ErrorManager : public jpeg_error_mgr {
-  std::string errmsg_{};
-  bool ok_{true};
-  bool invalid_{false};
-
-  static void error(j_common_ptr info)
-  {
-    const auto err = reinterpret_cast<ErrorManager*>(info->err);
-    if (!err) {
-      return;
-    }
-    err->ok_ = false;
-    switch (err->msg_code) {
-    case JERR_NO_HUFF_TABLE:
-    case JERR_NO_IMAGE:
-    case JERR_NO_QUANT_TABLE:
-    case JERR_NO_SOI:
-      err->errmsg_ = "Invalid image data";
-      err->invalid_ = true;
-      break;
-    case JERR_CANT_SUSPEND:
-      err->errmsg_ = "Buffer too small";
-      break;
-    default: {
-      char buffer[JMSG_LENGTH_MAX];
-      *buffer = 0;
-      err->format_message(info, buffer);
-      err->errmsg_ = buffer;
-      break;
-    }
-    }
-    longjmp(err->setjmp_buffer, 1);
-  }
-
-  static void message(j_common_ptr info) {}
-
- public:
-  jmp_buf setjmp_buffer{};
-
-  explicit ErrorManager() : jpeg_error_mgr{}
-  {
-    jpeg_std_error(this);
-    error_exit = error;
-    output_message = message;
-  }
-
-  explicit ErrorManager(const ErrorManager&) = delete;
-  explicit ErrorManager(ErrorManager&&) = delete;
-  ErrorManager& operator=(const ErrorManager&) = delete;
-  ErrorManager& operator=(ErrorManager&&) = delete;
-
-  ~ErrorManager() = default;
-
-  explicit inline operator bool() const
-  {
-    return !ok_;
-  }
-
-  inline bool invalid() const
-  {
-    return invalid_;
-  }
-
-  inline const char* msg() const
-  {
-    return errmsg_.c_str();
-  }
-};
-
-class Decompress : public jpeg_decompress_struct {
-  bool inited_{false};
-
- public:
-  explicit Decompress(
-      ErrorManager* errmgr, const bool stripMeta, const bool stripICC)
-      : jpeg_decompress_struct{}
-  {
-    err = errmgr;
-    jpeg_create_decompress(static_cast<jpeg_decompress_struct*>(this));
-    if (!stripMeta) {
-      jpeg_save_markers(this, JPEG_APP0 + 1, 0xffff);  // EXIF / XMP
-      jpeg_save_markers(this, JPEG_APP0 + 13, 0xffff);  // IPTC
-    }
-    if (!stripICC) {
-      jpeg_save_markers(this, JPEG_APP0 + 2, 0xffff);  // ICC
-    }
-  }
-
-  explicit Decompress(const Decompress&) = delete;
-  explicit Decompress(Decompress&&) = delete;
-  Decompress& operator=(const Decompress&) = delete;
-  Decompress& operator=(Decompress&&) = delete;
-
-  ~Decompress()
-  {
-    if (inited_) {
-      jpeg_finish_decompress(this);
-    }
-    jpeg_destroy_decompress(this);
-  }
-
-  void init(const uint8_t* buffer, const size_t len)
-  {
-    jpeg_mem_src(this, buffer, len);
-    jpeg_read_header(this, 1);
-    inited_ = true;
-  }
-};
-
-class MemoryDestination : public jpeg_destination_mgr {
-  static constexpr size_t buffer_growth{1 << 14};
-
-  uint8_t* buffer_;
-  size_t size_{0};
-  size_t capacity_;
-  const bool managed_;
-
-  static void init(j_compress_ptr compress)
-  {
-    const auto dest = reinterpret_cast<MemoryDestination*>(compress->dest);
-    if (!dest) {
-      return;
-    }
-    dest->next_output_byte = dest->buffer_ + dest->size_;
-    dest->free_in_buffer = dest->capacity_;
-  }
-
-  static int empty(j_compress_ptr compress)
-  {
-    const auto dest = reinterpret_cast<MemoryDestination*>(compress->dest);
-    if (!dest) {
-      return 0;
-    }
-    if (!dest->managed_) {
-      return 0;
-    }
-    dest->size_ = dest->capacity_ - dest->free_in_buffer;
-    auto newcap = dest->capacity_ + buffer_growth;
-    auto newbuf = (uint8_t*)realloc(dest->buffer_, newcap);
-    if (!newbuf) {
-      return 0;
-    }
-    dest->buffer_ = newbuf;
-    dest->capacity_ = newcap;
-    dest->next_output_byte = dest->buffer_ + dest->size_;
-    dest->free_in_buffer = buffer_growth;
-    return 1;
-  }
-
-  static void term(j_compress_ptr compress)
-  {
-    const auto dest = reinterpret_cast<MemoryDestination*>(compress->dest);
-    if (!dest) {
-      return;
-    }
-    dest->size_ = dest->capacity_ - dest->free_in_buffer;
-    if (!dest->managed_) {
-      return;
-    }
-    if (dest->free_in_buffer < buffer_growth) {
-      return;
-    }
-    auto newbuf = (uint8_t*)realloc(dest->buffer_, dest->size_);
-    if (!newbuf) {
-      return;
-    }
-    dest->buffer_ = newbuf;
-    dest->capacity_ = dest->size_;
-    dest->free_in_buffer = 0;
-  }
-
- public:
-  explicit MemoryDestination(size_t memhint)
-      : jpeg_destination_mgr{}, managed_{true}
-  {
-    init_destination = init;
-    empty_output_buffer = empty;
-    term_destination = term;
-    memhint = ((memhint / buffer_growth) + 1) * buffer_growth;
-    buffer_ = (uint8_t*)malloc(memhint);
-    capacity_ = buffer_ ? memhint : 0;
-  }
-
-  explicit MemoryDestination(uint8_t* buffer, const size_t capacity)
-      : jpeg_destination_mgr{},
-        buffer_{buffer},
-        capacity_{capacity},
-        managed_{false}
-  {
-    init_destination = init;
-    empty_output_buffer = empty;
-    term_destination = term;
-  }
-
-  explicit MemoryDestination(const MemoryDestination&) = delete;
-  explicit MemoryDestination(MemoryDestination&&) = delete;
-  MemoryDestination& operator=(const MemoryDestination&) = delete;
-  MemoryDestination& operator=(MemoryDestination&&) = delete;
-
-  ~MemoryDestination()
-  {
-    if (!buffer_) {
-      return;
-    }
-    if (managed_) {
-      free(buffer_);
-    }
-    buffer_ = nullptr;
-    size_ = 0;
-    capacity_ = 0;
-  }
-
-  inline const uint8_t* data() const
-  {
-    return buffer_;
-  }
-
-  inline size_t length() const
-  {
-    return size_;
-  }
-
-  inline size_t capacity() const
-  {
-    return capacity_;
-  }
-
-  inline bool managed() const
-  {
-    return managed_;
-  }
-
-  static void destroy(char*, void* hint) {}
-};
-
-class Compress : public jpeg_compress_struct {
-  std::unique_ptr<MemoryDestination> dst_;
-  bool inited_{false};
-  bool finished_{false};
-
- public:
-  explicit Compress(Decompress& dec, size_t memhint)
-      : dst_{std::make_unique<MemoryDestination>(memhint)}
-  {
-    jpeg_create_compress(this);
-
-    err = dec.err;
-    jpeg_copy_critical_parameters(&dec, this);
-    progressive_mode = FALSE;
-    optimize_coding = 1;
-    dest = dst_.get();
-  }
-
-  explicit Compress(Decompress& dec, uint8_t* buffer, size_t capacity)
-      : jpeg_compress_struct{},
-        dst_{std::make_unique<MemoryDestination>(buffer, capacity)}
-  {
-    jpeg_create_compress(this);
-
-    err = dec.err;
-    jpeg_copy_critical_parameters(&dec, this);
-    progressive_mode = FALSE;
-    optimize_coding = 1;
-    dest = dst_.get();
-  }
-
-  explicit Compress(const Compress&) = delete;
-  explicit Compress(Compress&&) = delete;
-  Compress& operator=(const Compress&) = delete;
-  Compress& operator=(Compress&&) = delete;
-
-  ~Compress()
-  {
-    jpeg_destroy_compress(this);
-  }
-
-  void init(jvirt_barray_ptr* coefs)
-  {
-    jpeg_write_coefficients(this, coefs);
-    inited_ = true;
-  }
-
-  void finish()
-  {
-    if (!inited_ || finished_) {
-      return;
-    }
-    jpeg_finish_compress(this);
-    finished_ = true;
-  }
-
-  std::unique_ptr<MemoryDestination> buffer()
-  {
-    dest = nullptr;
-    return std::move(dst_);
-  }
-};
-
+template<class T>
 class Holder {
   Persistent<Object> persistent_;
-  std::unique_ptr<MemoryDestination> dest_;
+  std::unique_ptr<T> dest_;
   const size_t self_;
 
   void Reset(Isolate* isolate)
@@ -366,13 +57,10 @@ class Holder {
   }
 
  public:
-  explicit Holder(
-      Isolate* isolate,
-      Local<Object>& o,
-      std::unique_ptr<MemoryDestination>&& dest)
+  explicit Holder(Isolate* isolate, Local<Object>& o, std::unique_ptr<T>&& dest)
       : persistent_(isolate, o),
         dest_{std::move(dest)},
-        self_{sizeof(*this) + sizeof(MemoryDestination) + dest_->capacity()}
+        self_{sizeof(*this) + sizeof(T) + dest_->Capacity()}
   {
     persistent_.SetWeak(this, WeakCallback, WeakCallbackType::kParameter);
     isolate->AdjustAmountOfExternalAllocatedMemory(self_);
@@ -390,264 +78,347 @@ class Holder {
   }
 };
 
-class Optimizer : public Nan::AsyncWorker {
-  std::unique_ptr<Compress> compress_;
+}  // namespace
 
-  const uint8_t* buffer_;
-  const size_t len_;
+namespace jpegoptim {
+void ErrorManager::error(j_common_ptr info)
+{
+  const auto err = reinterpret_cast<ErrorManager*>(info->err);
+  if (err == nullptr) {
+    return;
+  }
+  err->ok_ = false;
+  switch (err->msg_code) {
+  case JERR_NO_HUFF_TABLE:
+  case JERR_NO_IMAGE:
+  case JERR_NO_QUANT_TABLE:
+  case JERR_NO_SOI:
+    err->errmsg_ = "Invalid image data";
+    err->invalid_ = true;
+    break;
+  case JERR_CANT_SUSPEND:
+    err->errmsg_ = "Buffer too small";
+    break;
+  default: {
+    char buffer[JMSG_LENGTH_MAX];
+    *buffer = 0;
+    err->format_message(info, buffer);
+    err->errmsg_ = buffer;
+    break;
+  }
+  }
+  longjmp(err->setjmp_buffer, 1);  // NOLINT
+}
 
-  uint8_t* outbuf_{};
-  size_t outlen_{};
+Compress::Compress(Decompress& dec, size_t memhint)
+    : jpeg_compress_struct{},
+      dst_{std::make_unique<ManagedMemoryDestination>(memhint)}
+{
+  jpeg_create_compress(this);
 
-#ifdef HAS_EXIF
-  std::string replacementExif{};
-#endif
+  err = dec.err;
+  jpeg_copy_critical_parameters(&dec, this);
+  progressive_mode = FALSE;
+  optimize_coding = 1;
+  dest = dst_.get();
+}
 
-  bool invalid_{false};
-  bool stripMeta_;
-  bool stripICC_;
-  bool stripThumb_;
+Compress::Compress(Decompress& dec, uint8_t* buffer, size_t capacity)
+    : jpeg_compress_struct{},
+      dst_{std::make_unique<UnmanagedMemoryDestination>(buffer, capacity)}
+{
+  jpeg_create_compress(this);
 
-  static uint8_t* Data(Local<ArrayBufferView>& buffer)
-  {
-    auto d = buffer->Buffer()->GetContents().Data();
-    return reinterpret_cast<uint8_t*>(d) + buffer->ByteOffset();
+  err = dec.err;
+  jpeg_copy_critical_parameters(&dec, this);
+  progressive_mode = FALSE;
+  optimize_coding = 1;
+  dest = dst_.get();
+}
+
+void MemoryDestination::init(j_compress_ptr compress)
+{
+  const auto dest = reinterpret_cast<Compress*>(compress)->Dest();
+  if (dest == nullptr) {
+    return;
+  }
+  return dest->Init();
+}
+
+boolean MemoryDestination::empty(j_compress_ptr compress)
+{
+  const auto dest = reinterpret_cast<Compress*>(compress)->Dest();
+  if (dest == nullptr) {
+    return FALSE;
+  }
+  return dest->Empty();
+}
+
+void MemoryDestination::term(j_compress_ptr compress)
+{
+  const auto dest = reinterpret_cast<Compress*>(compress)->Dest();
+  if (dest == nullptr) {
+    return;
+  }
+  return dest->Term();
+}
+
+boolean ManagedMemoryDestination::Empty()
+{
+  size_ = capacity_ - free_in_buffer;
+  auto newcap = capacity_ + buffer_growth;
+  auto newbuf = reinterpret_cast<uint8_t*>(realloc(buffer_.get(), newcap));
+  if (newbuf == nullptr) {
+    size_ = capacity_ = 0;
+    buffer_.reset();
+    next_output_byte = nullptr;
+    free_in_buffer = 0;
+    return FALSE;
+  }
+  (void)buffer_.release();
+  buffer_.reset(newbuf);
+  capacity_ = newcap;
+  next_output_byte =
+      reinterpret_cast<decltype(next_output_byte)>(newbuf) + size_;
+  free_in_buffer = buffer_growth;
+  return TRUE;
+}
+
+void ManagedMemoryDestination::Term()
+{
+  size_ = capacity_ - free_in_buffer;
+  if (free_in_buffer < buffer_growth) {
+    return;
+  }
+  auto newbuf = reinterpret_cast<uint8_t*>(realloc(buffer_.get(), size_));
+  if (newbuf == nullptr) {
+    return;
+  }
+  (void)buffer_.release();
+  buffer_.reset(newbuf);
+  capacity_ = size_;
+  free_in_buffer = 0;
+}
+
+Optimizer::Optimizer(
+    Local<Promise::Resolver>& res,
+    Local<ArrayBufferView>& buf,
+    MaybeLocal<ArrayBufferView>& outbuf,
+    StripFlags flags)
+    : Nan::AsyncWorker(nullptr, "jpegoptimize"),
+      buffer_{BufferData(buf)},
+      len_{buf->ByteLength()},
+      stripMeta_{(flags & StripMeta) == StripMeta},
+      stripICC_{(flags & StripICC) == StripICC},
+      stripThumb_{(flags & StripThumbnail) == StripThumbnail}
+{
+  SaveToPersistent("buf", buf);
+  SaveToPersistent("res", res);
+  if (!outbuf.IsEmpty()) {
+    auto obuf = outbuf.ToLocalChecked();
+    SaveToPersistent("out", obuf);
+    outbuf_ = BufferData(obuf);
+    outlen_ = obuf->ByteLength();
+  }
+}
+
+bool Optimizer::CopyMarkers(ErrorManager& err, Decompress& dec)
+{
+  auto marker = dec.marker_list;
+  auto sawICC{false};
+  std::vector<decltype(marker)> mrks;
+  while (marker != nullptr) {
+    switch (marker->marker) {
+    case JPEG_APP0 + 1:
+      if (stripMeta_) {
+        break;
+      }
+      if (marker->data_length > TAG_EXIF_LEN &&
+          memcmp(marker->data, TAG_EXIF, TAG_EXIF_LEN) == 0) {
+        mrks.push_back(marker);
+      }
+      else if (
+          marker->data_length > TAG_XMP_LEN &&
+          memcmp(marker->data, TAG_XMP, TAG_XMP_LEN) == 0) {
+        mrks.push_back(marker);
+      }
+      break;
+
+    case JPEG_APP0 + 2:
+      if (stripICC_) {
+        break;
+      }
+      if (sawICC ||
+          (marker->data_length > TAG_ICC_LEN &&
+           memcmp(marker->data, TAG_ICC, TAG_ICC_LEN) == 0)) {
+        sawICC = true;
+        mrks.push_back(marker);
+      }
+      break;
+
+    case JPEG_APP0 + 13:
+      if (stripMeta_) {
+        break;
+      }
+      if (marker->data_length > TAG_IPTC_LEN &&
+          memcmp(marker->data, TAG_IPTC, TAG_IPTC_LEN) == 0) {
+        mrks.push_back(marker);
+      }
+      break;
+
+    default:
+      // no copy mr roboto
+      break;
+    }
+    marker = marker->next;
   }
 
- public:
-  explicit Optimizer(
-      Local<Promise::Resolver>& res,
-      Local<ArrayBufferView>& buf,
-      MaybeLocal<ArrayBufferView>& outbuf,
-      StripFlags flags)
-      : Nan::AsyncWorker(nullptr, "jpegoptimize"),
-        buffer_{Data(buf)},
-        len_{buf->ByteLength()},
-        stripMeta_{(flags & StripMeta) == StripMeta},
-        stripICC_{(flags & StripICC) == StripICC},
-        stripThumb_{(flags & StripThumbnail) == StripThumbnail}
-  {
-    SaveToPersistent("buf", buf);
-    SaveToPersistent("res", res);
-    if (!outbuf.IsEmpty()) {
-      auto obuf = outbuf.ToLocalChecked();
-      SaveToPersistent("out", obuf);
-      outbuf_ = Data(obuf);
-      outlen_ = obuf->ByteLength();
+  std::sort(
+      mrks.begin(), mrks.end(), [](decltype(marker) a, decltype(marker) b) {
+        return a->marker < b->marker;
+      });
+
+  for (const auto& m : mrks) {
+#ifdef HAS_EXIF
+    if (m->marker == JPEG_APP0 + 1 && !replacementExif.empty()) {
+      jpeg_write_marker(
+          compress_.get(), m->marker,
+          reinterpret_cast<const uint8_t*>(replacementExif.data()),
+          replacementExif.size());
+      replacementExif.clear();
+    }
+    else
+#endif
+    {
+      jpeg_write_marker(compress_.get(), m->marker, m->data, m->data_length);
+    }
+    if (err) {
+      compress_.reset();
+      SetErrorMessage(err.msg());
+      return false;
     }
   }
 
-  explicit Optimizer(const Optimizer&) = delete;
-  explicit Optimizer(Optimizer&&) = delete;
-  Optimizer& operator=(const Optimizer&) = delete;
-  Optimizer& operator=(Optimizer&&) = delete;
+  return true;
+}
 
-  bool CopyMarkers(ErrorManager& err, Decompress& dec)
-  {
-    auto marker = dec.marker_list;
-    auto sawICC{false};
-    std::vector<decltype(marker)> mrks;
-    while (marker) {
-      switch (marker->marker) {
-      case JPEG_APP0 + 1:
-        if (stripMeta_) {
-          break;
-        }
-        if (marker->data_length > TAG_EXIF_LEN &&
-            !memcmp(marker->data, TAG_EXIF, TAG_EXIF_LEN)) {
-          mrks.push_back(marker);
-        }
-        else if (
-            marker->data_length > TAG_XMP_LEN &&
-            !memcmp(marker->data, TAG_XMP, TAG_XMP_LEN)) {
-          mrks.push_back(marker);
-        }
-        break;
-
-      case JPEG_APP0 + 2:
-        if (stripICC_) {
-          break;
-        }
-        if (sawICC ||
-            (marker->data_length > TAG_ICC_LEN &&
-             !memcmp(marker->data, TAG_ICC, TAG_ICC_LEN))) {
-          sawICC = true;
-          mrks.push_back(marker);
-        }
-        break;
-
-      case JPEG_APP0 + 13:
-        if (stripMeta_) {
-          break;
-        }
-        if (marker->data_length > TAG_IPTC_LEN &&
-            !memcmp(marker->data, TAG_IPTC, TAG_IPTC_LEN)) {
-          mrks.push_back(marker);
-        }
-        break;
-
-      default:
-        // no copy mr roboto
-        break;
-      }
-      marker = marker->next;
-    }
-
-    std::sort(
-        mrks.begin(), mrks.end(), [](decltype(marker) a, decltype(marker) b) {
-          return a->marker < b->marker;
-        });
-
-    for (const auto& m : mrks) {
-#ifdef HAS_EXIF
-      if (m->marker == JPEG_APP0 + 1 && !replacementExif.empty()) {
-        jpeg_write_marker(
-            compress_.get(), m->marker, (const uint8_t*)replacementExif.data(),
-            replacementExif.size());
-        replacementExif.clear();
-      }
-      else
-#endif
-      {
-        jpeg_write_marker(compress_.get(), m->marker, m->data, m->data_length);
-      }
-      if (err) {
-        compress_.reset();
-        SetErrorMessage(err.msg());
-        return false;
-      }
-    }
-
-    return true;
-  }
-
-  void Execute() final
-  {
-    ErrorManager err;
-    if (setjmp(err.setjmp_buffer)) {
-      invalid_ = err.invalid();
-      if (err) {
-        return SetErrorMessage(err.msg());
-      }
-      return SetErrorMessage("Invalid Image");
-    }
-
-#ifdef HAS_EXIF
-    if (!stripMeta_ && stripThumb_) {
-      struct ed {
-        void operator()(ExifData* d)
-        {
-          if (d) {
-            exif_data_unref(d);
-          }
-        }
-      };
-      std::unique_ptr<ExifData, ed> exif(
-          exif_data_new_from_data(buffer_, len_));
-      if (exif && exif->data && exif->size) {
-        free(exif->data);
-        exif->data = NULL;
-        exif->size = 0;
-        exif_data_fix(exif.get());
-
-        unsigned char* data;
-        unsigned int len;
-        exif_data_save_data(exif.get(), &data, &len);
-        if (data && len) {
-          replacementExif = std::string((char*)data, len);
-        }
-        if (data) {
-          free(data);
-        }
-      }
-    }
-#endif
-
-    Decompress dec(&err, stripMeta_, stripICC_);
-    dec.init(buffer_, len_);
-    const auto coefs = jpeg_read_coefficients(&dec);
+void Optimizer::Execute()
+{
+  ErrorManager err;
+  if (setjmp(err.setjmp_buffer)) {  // NOLINT
+    invalid_ = err.invalid();
     if (err) {
       return SetErrorMessage(err.msg());
     }
-    if (!coefs) {
-      return SetErrorMessage("Invalid image");
-    }
-
-    if (outbuf_) {
-      compress_ = std::make_unique<Compress>(dec, outbuf_, outlen_);
-    }
-    else {
-      compress_ = std::make_unique<Compress>(dec, len_);
-    }
-    compress_->init(coefs);
-    if (err) {
-      compress_.reset();
-      SetErrorMessage(err.msg());
-      return;
-    }
-
-    if (!CopyMarkers(err, dec)) {
-      return;
-    }
-
-    compress_->finish();
-    if (err) {
-      compress_.reset();
-      SetErrorMessage(err.msg());
-      return;
-    }
+    return SetErrorMessage("Invalid Image");
   }
 
-  void HandleOKCallback() final
-  {
-    Nan::HandleScope scope;
-    GetFromPersistent("buf");
-    GetFromPersistent("out");
-    auto resolver = GetFromPersistent("res").As<Promise::Resolver>();
-    if (!compress_) {
-      auto err = Nan::Error("Unknown error");
-      resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
-      return;
+#ifdef HAS_EXIF
+  if (!stripMeta_ && stripThumb_) {
+    std::unique_ptr<ExifData, ed> exif(exif_data_new_from_data(buffer_, len_));
+    if (exif && exif->data != nullptr && exif->size > 0) {
+      free(exif->data);  // NOLINT
+      exif->data = nullptr;
+      exif->size = 0;
+      exif_data_fix(exif.get());
+
+      unsigned char* data;
+      unsigned int len;
+      exif_data_save_data(exif.get(), &data, &len);
+      std::unique_ptr<char, free_deleter<char>> pdata(
+          reinterpret_cast<char*>(data));
+      if (pdata && len > 0) {
+        replacementExif = std::string(pdata.get(), len);
+      }
     }
-    auto dest = compress_->buffer();
+  }
+#endif
+
+  Decompress dec(&err, stripMeta_, stripICC_);
+  dec.init(buffer_, len_);
+  const auto coefs = jpeg_read_coefficients(&dec);
+  if (err) {
+    return SetErrorMessage(err.msg());
+  }
+  if (coefs == nullptr) {
+    return SetErrorMessage("Invalid image");
+  }
+
+  if (outbuf_ != nullptr) {
+    compress_ = std::make_unique<Compress>(dec, outbuf_, outlen_);
+  }
+  else {
+    compress_ = std::make_unique<Compress>(dec, len_);
+  }
+  compress_->Init(coefs);
+  if (err) {
     compress_.reset();
-    auto isolate = Isolate::GetCurrent();
-
-    if (!dest->managed()) {
-      auto length = Nan::New<Number>((double)dest->length());
-      resolver->Resolve(Nan::GetCurrentContext(), length).IsNothing();
-      dest.reset();
-      return;
-    }
-
-    auto buf = node::Buffer::New(
-        isolate, (char*)dest->data(), dest->length(),
-        MemoryDestination::destroy, dest.get());
-    if (buf.IsEmpty()) {
-      auto err = Nan::Error("Cannot create output buffer");
-      resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
-      return;
-    }
-
-    auto lbuf = buf.ToLocalChecked();
-    new Holder(isolate, lbuf, std::move(dest));
-    resolver->Resolve(Nan::GetCurrentContext(), lbuf).IsNothing();
+    SetErrorMessage(err.msg());
+    return;
   }
 
-  void HandleErrorCallback() final
-  {
-    Nan::HandleScope scope;
-    GetFromPersistent("buf");
-    GetFromPersistent("out");
-    auto resolver = GetFromPersistent("res").As<Promise::Resolver>();
-    auto err = Nan::Error(ErrorMessage()).As<Object>();
-    Nan::DefineOwnProperty(
-        err, Nan::New("invalid").ToLocalChecked(), Nan::New(invalid_));
+  if (!CopyMarkers(err, dec)) {
+    return;
+  }
+
+  compress_->Finish();
+  if (err) {
+    compress_.reset();
+    SetErrorMessage(err.msg());
+    return;
+  }
+}
+
+void Optimizer::HandleOKCallback()
+{
+  Nan::HandleScope scope;
+  GetFromPersistent("buf");
+  GetFromPersistent("out");
+  auto resolver = GetFromPersistent("res").As<Promise::Resolver>();
+  if (!compress_) {
+    auto err = Nan::Error("Unknown error");
     resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
+    return;
   }
-};
+  auto dest = compress_->Buffer();
+  compress_.reset();
+  auto isolate = Isolate::GetCurrent();
 
-}  // namespace
+  if (!dest->Managed()) {
+    auto length = Nan::New<Number>(dest->Length());
+    resolver->Resolve(Nan::GetCurrentContext(), length).IsNothing();
+    dest.reset();
+    return;
+  }
+
+  auto buf = node::Buffer::New(
+      isolate, reinterpret_cast<char*>(dest->Data()), dest->Length(),
+      MemoryDestination::destroy, nullptr);
+  if (buf.IsEmpty()) {
+    auto err = Nan::Error("Cannot create output buffer");
+    resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
+    return;
+  }
+
+  auto lbuf = buf.ToLocalChecked();
+  new Holder<MemoryDestination>(isolate, lbuf, std::move(dest));
+  resolver->Resolve(Nan::GetCurrentContext(), lbuf).IsNothing();
+}
+
+void Optimizer::HandleErrorCallback()
+{
+  Nan::HandleScope scope;
+  GetFromPersistent("buf");
+  GetFromPersistent("out");
+  compress_.reset();
+
+  auto resolver = GetFromPersistent("res").As<Promise::Resolver>();
+  auto err = Nan::Error(ErrorMessage()).As<Object>();
+  Nan::DefineOwnProperty(
+      err, Nan::New("invalid").ToLocalChecked(), Nan::New(invalid_));
+  resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
+}
+}  // namespace jpegoptim
 
 NAN_METHOD(optimize)
 {
@@ -664,7 +435,8 @@ NAN_METHOD(optimize)
     return Nan::ThrowTypeError("Expected a filled buffer");
   }
 
-  const auto flags = (StripFlags)Nan::To<uint32_t>(info[1]).FromJust();
+  const auto flags =
+      static_cast<jpegoptim::StripFlags>(Nan::To<uint32_t>(info[1]).FromJust());
 #ifndef HAS_EXIF
   if ((flags & StripThumbnail) == StripThumbnail) {
     return Nan::ThrowRangeError(
@@ -690,9 +462,13 @@ NAN_METHOD(optimize)
   auto resolver =
       Promise::Resolver::New(Nan::GetCurrentContext()).ToLocalChecked();
   auto promise = resolver->GetPromise();
-  Nan::AsyncQueueWorker(new Optimizer(resolver, buf, outbuf, flags));
+  Nan::AsyncQueueWorker(new jpegoptim::Optimizer(resolver, buf, outbuf, flags));
   info.GetReturnValue().Set(promise);
 }
+
+#ifdef __GNUC__
+#  pragma GCC visibility pop
+#endif
 
 NAN_MODULE_INIT(InitAll)
 {
