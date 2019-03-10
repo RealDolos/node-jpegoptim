@@ -10,10 +10,17 @@ Also allows to strip metadata (EXIF, IPTC, XMP) segments and/or ICC profile segm
 # Requirements
 
 - Node, obviously, a recent versin (at the time of writing, 10 and 11 tested).
-- Linux, potentially other *nix (untested)
+- Linux, macOS, potentially other *nix (untested)
 - x86_64, potentially others (untested)
 - libjpeg (or libjpeg-turbo or libmozjpeg, whatever pkg-config finds as libjpeg)
 - Optionally libexif to enable `stripThumbnail`.
+
+E.g. to build it on macOS with mozjpeg and libexif from brew, do:
+
+```sh
+export PKG_CONFIG_PATH=$(brew --prefix mozjpeg)/lib/pkgconfig:$(brew --prefix libexif)/lib/pkgconfig
+yarn add @dolos/jpegoptim
+```
 
 ## How
 

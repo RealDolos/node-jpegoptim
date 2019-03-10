@@ -25,8 +25,8 @@
                 "include_dirs": [
                     "<!@(pkg-config --cflags-only-I libexif | sed s/-I//g)",
                 ],
-                "cflags_cc": [
-                    "-DHAS_EXIF=1",
+                "defines": [
+                    "HAS_EXIF=1",
                 ],
                 "libraries": [
                     '<!@(pkg-config --libs libexif)',

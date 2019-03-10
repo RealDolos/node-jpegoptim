@@ -127,7 +127,7 @@ class Decompress : public jpeg_decompress_struct {
   inline void init(const uint8_t* buffer, const size_t len)
   {
     jpeg_mem_src(this, buffer, len);
-    jpeg_read_header(this, 1);
+    jpeg_read_header(this, static_cast<boolean>(TRUE));
     inited_ = true;
   }
 };
@@ -283,7 +283,7 @@ class UnmanagedMemoryDestination : public MemoryDestination {
   boolean Empty() final
   {
     // Cannot "empty" the buffer, as this would mean resizing it
-    return 0;
+    return static_cast<boolean>(FALSE);
   }
 
   void Term() final
@@ -329,9 +329,12 @@ class Optimizer : public Nan::AsyncWorker {
 #endif
 
   bool invalid_{false};
+
+#ifdef HAS_EXIF
+  bool stripThumb_;
+#endif
   bool stripMeta_;
   bool stripICC_;
-  bool stripThumb_;
 
   bool CopyMarkers(ErrorManager& err, Decompress& dec);
 
@@ -359,3 +362,4 @@ class Optimizer : public Nan::AsyncWorker {
 #ifdef __GNUC__
 #  pragma GCC visibility pop
 #endif
+

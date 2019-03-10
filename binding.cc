@@ -118,8 +118,8 @@ Compress::Compress(Decompress& dec, size_t memhint)
 
   err = dec.err;
   jpeg_copy_critical_parameters(&dec, this);
-  progressive_mode = FALSE;
-  optimize_coding = 1;
+  progressive_mode = static_cast<boolean>(FALSE);
+  optimize_coding = static_cast<boolean>(TRUE);
   dest = dst_.get();
 }
 
@@ -131,8 +131,8 @@ Compress::Compress(Decompress& dec, uint8_t* buffer, size_t capacity)
 
   err = dec.err;
   jpeg_copy_critical_parameters(&dec, this);
-  progressive_mode = FALSE;
-  optimize_coding = 1;
+  progressive_mode = static_cast<boolean>(FALSE);
+  optimize_coding = static_cast<boolean>(TRUE);
   dest = dst_.get();
 }
 
@@ -149,7 +149,7 @@ boolean MemoryDestination::empty(j_compress_ptr compress)
 {
   const auto dest = reinterpret_cast<Compress*>(compress)->Dest();
   if (dest == nullptr) {
-    return FALSE;
+    return static_cast<boolean>(FALSE);
   }
   return dest->Empty();
 }
@@ -173,7 +173,7 @@ boolean ManagedMemoryDestination::Empty()
     buffer_.reset();
     next_output_byte = nullptr;
     free_in_buffer = 0;
-    return FALSE;
+    return static_cast<boolean>(FALSE);
   }
   (void)buffer_.release();
   buffer_.reset(newbuf);
@@ -181,7 +181,7 @@ boolean ManagedMemoryDestination::Empty()
   next_output_byte =
       reinterpret_cast<decltype(next_output_byte)>(newbuf) + size_;
   free_in_buffer = buffer_growth;
-  return TRUE;
+  return static_cast<boolean>(TRUE);
 }
 
 void ManagedMemoryDestination::Term()
@@ -208,9 +208,11 @@ Optimizer::Optimizer(
     : Nan::AsyncWorker(nullptr, "jpegoptimize"),
       buffer_{BufferData(buf)},
       len_{buf->ByteLength()},
+#ifdef HAS_EXIF
+      stripThumb_{(flags & StripThumbnail) == StripThumbnail},
+#endif
       stripMeta_{(flags & StripMeta) == StripMeta},
-      stripICC_{(flags & StripICC) == StripICC},
-      stripThumb_{(flags & StripThumbnail) == StripThumbnail}
+      stripICC_{(flags & StripICC) == StripICC}
 {
   SaveToPersistent("buf", buf);
   SaveToPersistent("res", res);
