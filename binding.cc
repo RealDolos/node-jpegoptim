@@ -453,7 +453,7 @@ NAN_METHOD(optimize)
     }
     auto lobuf = info[2].As<ArrayBufferView>();
     if (lobuf == buf) {
-      return Nan::ThrowRangeError("Input ant output buffer cannot be the same");
+      return Nan::ThrowRangeError("Input and output buffer cannot be the same");
     }
     if (lobuf->ByteLength() <= 0) {
       return Nan::ThrowTypeError("Expected a non-zero output buffer");

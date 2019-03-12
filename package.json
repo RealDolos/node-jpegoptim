@@ -14,10 +14,14 @@
   "author": "RealDolos",
   "license": "MIT",
   "repository": "github:RealDolos/node-jpegoptim",
+  "scripts": {
+    "test": "jest"
+  },
   "dependencies": {
     "nan": "^2.12.1"
   },
   "devDependencies": {
-    "eslint": "^5.15.1"
+    "eslint": "^5.15.1",
+    "jest": "^24.4.0"
   }
 }

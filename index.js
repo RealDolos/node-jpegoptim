@@ -68,11 +68,20 @@ async function optimize(buf, options = {}) {
     return await _optimize(buf, flags);
   }
   catch (ex) {
-    const {invalid = false} = ex;
-    if (!(ex instanceof RangeError || ex instanceof TypeError)) {
+    const {stack, invalid = false} = ex;
+    if (ex.name === "RangeError") {
+      // eslint-disable-next-line no-ex-assign
+      ex = new RangeError(ex.message || ex);
+    }
+    else if (ex.name === "TypeError") {
+      // eslint-disable-next-line no-ex-assign
+      ex = new TypeError(ex.message || ex);
+    }
+    else {
       // eslint-disable-next-line no-ex-assign
       ex = new OptimizeError(ex.message || ex);
     }
+    ex.stack = stack || ex.stack;
     Object.defineProperty(ex, "invalid", {
       value: invalid,
       enumerable: true,

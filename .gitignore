@@ -1,4 +1,4 @@
 build/
 node_modules/
 *.jpg
-test.js
+t.js
