@@ -21,16 +21,16 @@ using v8::WeakCallbackType;
 
 namespace {
 constexpr const char TAG_EXIF[] = "Exif\0\0";
-constexpr const size_t TAG_EXIF_LEN = sizeof(TAG_EXIF);
+constexpr const size_t TAG_EXIF_LEN = sizeof(TAG_EXIF) - 1;
 
 constexpr const char TAG_XMP[] = "http://ns.adobe.com/xap/1.0/\0";
-constexpr const size_t TAG_XMP_LEN = sizeof(TAG_XMP);
+constexpr const size_t TAG_XMP_LEN = sizeof(TAG_XMP) - 1;
 
 constexpr const char TAG_ICC[] = "ICC_PROFILE\0";
-constexpr const size_t TAG_ICC_LEN = sizeof(TAG_ICC);
+constexpr const size_t TAG_ICC_LEN = sizeof(TAG_ICC) - 1;
 
 constexpr const char TAG_IPTC[] = "\x1c";
-constexpr const size_t TAG_IPTC_LEN = sizeof(TAG_IPTC);
+constexpr const size_t TAG_IPTC_LEN = sizeof(TAG_IPTC) - 1;
 
 uint8_t* BufferData(Local<ArrayBufferView>& buffer)
 {
