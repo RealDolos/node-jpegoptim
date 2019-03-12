@@ -124,12 +124,10 @@ describe("optimize", function() {
       expect(!opt.equals(opt2)).toBe(true);
     });
 
-    test("stripThumbnail works", async function() {
-      if (!optim.supportsThumbnailStripping) {
-        this.skip();
-        return;
-      }
-
+    const testThumb = optim.supportsThumbnailStripping ?
+      test :
+      test.skip.bind(test);
+    testThumb("stripThumbnail works", async function() {
       const opt = await optim(base, {strip: true});
       const opt2 = await optim(base, {stripThumbnail: true});
       ensure(opt);
