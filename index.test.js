@@ -38,9 +38,8 @@ describe("globals", function() {
 
 function ensure(opt) {
   expect(Buffer.isBuffer(opt)).toBe(true);
-  expect(opt.length > 0).toBe(true);
-  expect(opt.length < base.length).toBe(true);
-  expect(!base.equals(opt)).toBe(true);
+  expect(opt.length).toBeGreaterThan(0);
+  expect(opt.length).toBeLessThanOrEqual(base.length);
 }
 
 describe("optimize", function() {
