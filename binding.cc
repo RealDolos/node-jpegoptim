@@ -4,6 +4,7 @@
 #include "binding.hh"
 
 using v8::ArrayBufferView;
+using v8::Function;
 using v8::FunctionTemplate;
 using v8::Isolate;
 using v8::Local;
@@ -12,6 +13,7 @@ using v8::Number;
 using v8::Object;
 using v8::Persistent;
 using v8::Promise;
+using v8::Value;
 using v8::WeakCallbackInfo;
 using v8::WeakCallbackType;
 
@@ -384,8 +386,6 @@ void Optimizer::HandleOKCallback()
   }
   auto dest = compress_->Buffer();
   compress_.reset();
-  auto isolate = Isolate::GetCurrent();
-
   if (!dest->Managed()) {
     auto length = Nan::New<Number>(dest->Length());
     resolver->Resolve(Nan::GetCurrentContext(), length).IsNothing();
@@ -393,6 +393,7 @@ void Optimizer::HandleOKCallback()
     return;
   }
 
+  auto isolate = Isolate::GetCurrent();
   auto buf = node::Buffer::New(
       isolate, reinterpret_cast<char*>(dest->Data()), dest->Length(),
       MemoryDestination::destroy, nullptr);
@@ -420,7 +421,68 @@ void Optimizer::HandleErrorCallback()
       err, Nan::New("invalid").ToLocalChecked(), Nan::New(invalid_));
   resolver->Reject(Nan::GetCurrentContext(), err).IsNothing();
 }
+
+JBLOCKARRAY get_row(Decompress* dec, jvirt_barray_ptr *coefs, JDIMENSION compNum, JDIMENSION rowNum)
+{
+  return dec->mem->access_virt_barray((j_common_ptr)dec, coefs[compNum], rowNum, (JDIMENSION)1, FALSE);
+}
+
 }  // namespace jpegoptim
+
+NAN_METHOD(dumpdct)
+{
+  using namespace jpegoptim;
+  Nan::HandleScope scope;
+  if (info.Length() < 2 || !node::Buffer::HasInstance(info[0])) {
+    return Nan::ThrowTypeError("Expected a buffer and flags");
+  }
+
+  if (!info[0]->IsArrayBufferView()) {
+    return Nan::ThrowTypeError("Expected a buffer");
+  }
+  auto buf = info[0].As<ArrayBufferView>();
+  if (buf->ByteLength() <= 0) {
+    return Nan::ThrowTypeError("Expected a filled buffer");
+  }
+  auto cb = info[1].As<Function>();
+  Nan::Callback callback(cb);
+
+  ErrorManager err;
+  if (setjmp(err.setjmp_buffer)) {  // NOLINT
+    auto error = Nan::Error(err.msg()).As<Object>();
+    Nan::DefineOwnProperty(
+        error, Nan::New("invalid").ToLocalChecked(), Nan::New(err.invalid()));
+    Local<Value> errval = error.As<Value>();
+    return Nan::ThrowError(errval);
+  }
+
+  Decompress dec(&err, true, true);
+  const auto buffer{BufferData(buf)};
+  const auto blen{buf->ByteLength()};
+  dec.init(buffer, blen);
+  const auto coefs = jpeg_read_coefficients(&dec);
+  auto isolate = Isolate::GetCurrent();
+  for (int compNum = 0; compNum < dec.num_components; compNum++) {
+    jpeg_component_info* compInfo = &dec.comp_info[compNum];
+
+    const auto widthInBlocks = (JDIMENSION)compInfo->width_in_blocks;
+    const auto heightInBlocks = (JDIMENSION)compInfo->height_in_blocks;
+
+    const auto len = widthInBlocks * sizeof(JBLOCK);
+    for (JDIMENSION rowNum = 0; rowNum < heightInBlocks; rowNum++) {
+      const auto rowptr = get_row(&dec, coefs, compNum, rowNum);
+      auto outbuf = Nan::CopyBuffer(reinterpret_cast<char*>(*rowptr), len);
+      if (outbuf.IsEmpty()) {
+        auto err = Nan::Error("Cannot create output buffer");
+        return Nan::ThrowError(err);
+      }
+      Local<Value> cargv[] = {
+        outbuf.ToLocalChecked(),
+      };
+      Nan::Call(callback, 1, cargv).ToLocalChecked();
+    }
+  }
+}
 
 NAN_METHOD(optimize)
 {
@@ -477,6 +539,9 @@ NAN_MODULE_INIT(InitAll)
   Nan::Set(
       target, Nan::New("_optimize").ToLocalChecked(),
       Nan::GetFunction(Nan::New<FunctionTemplate>(optimize)).ToLocalChecked());
+  Nan::Set(
+      target, Nan::New("_dumpdct").ToLocalChecked(),
+      Nan::GetFunction(Nan::New<FunctionTemplate>(dumpdct)).ToLocalChecked());
 
   Local<Object> versions = Nan::New<Object>();
   jpegoptim::ErrorManager err;

@@ -10,6 +10,7 @@ describe("globals", function() {
     expect(typeof optim).toBe("function");
     expect(optim.optimize).toBeDefined();
     expect(typeof optim.optimize).toBe("function");
+    expect(typeof optim.dumpdct).toBe("function");
   });
 
   test("OptimizeError", function() {
@@ -133,5 +134,40 @@ describe("optimize", function() {
       ensure(opt2);
       expect(!opt.equals(opt2)).toBe(true);
     });
+  });
+});
+
+describe("dumpdct", function() {
+  test("no params", function() {
+    expect(() => optim.dumpdct()).toThrow(TypeError);
+  });
+
+  test("types", function() {
+    expect(() => optim.dumpdct(base)).toThrow(TypeError);
+    expect(() => optim.dumpdct("err", () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(1, () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(true, () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(false, () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(null, () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(undefined, () => {})).toThrow(TypeError);
+    expect(() => optim.dumpdct(Buffer.alloc(0), () => {})).toThrow(TypeError);
+  });
+  test("invalid data", function() {
+    expect(() => optim.dumpdct(Buffer.from("errror"), () => {})).
+      toThrow(optim.OptimizeError);
+    expect(() => optim.dumpdct(Buffer.from("errror"), () => {})).
+      toThrow("Invalid image data");
+  });
+  test("dct", function() {
+    for (let i = 0; i < 100; ++i) {
+      const h = require("crypto").createHash("sha256");
+
+      optim.dumpdct(base, d => {
+        h.update(d);
+      });
+
+      expect(h.digest("hex")).toBe(
+        "d7cb32613725b6de9e679eeef762ff62a0aeff9478c47e43d41136fc080081a5");
+    }
   });
 });

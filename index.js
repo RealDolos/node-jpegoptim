@@ -1,6 +1,6 @@
 "use strict";
 
-const {_optimize, _versions} = require("./build/Release/binding");
+const {_optimize, _dumpdct, _versions} = require("./build/Release/binding");
 
 const StripNone = 0;
 const StripMeta = 1 << 0;
@@ -90,8 +90,56 @@ async function optimize(buf, options = {}) {
   }
 }
 
+/**
+ * Dump DCT bytes of a jpeg.
+ *
+ * The callback function will be called multiple times, usually with
+ * a line of blocks.
+ * Please note that the buffer func will receive will be reused and thus change
+ * between calls. As such, you must copy the buffer if you want to keep
+ * the contents.
+ *
+ * @param {Buffer} buf Buffer containing the JPEG to optimize
+ * @param {Function} func Buffer receiving the DCT bytes
+ *
+ * @throws TypeError
+ * @throws RangeError
+ * @throws OptimizeError
+ */
+function dumpdct(buf, func) {
+  try {
+    if (typeof func !== "function") {
+      throw new TypeError("func is not a function");
+    }
+    _dumpdct(buf, func);
+  }
+  catch (ex) {
+    const {stack, invalid = false} = ex;
+    if (ex.name === "RangeError") {
+      // eslint-disable-next-line no-ex-assign
+      ex = new RangeError(ex.message || ex);
+    }
+    else if (ex.name === "TypeError") {
+      // eslint-disable-next-line no-ex-assign
+      ex = new TypeError(ex.message || ex);
+    }
+    else {
+      // eslint-disable-next-line no-ex-assign
+      ex = new OptimizeError(ex.message || ex);
+    }
+    ex.stack = stack || ex.stack;
+    Object.defineProperty(ex, "invalid", {
+      value: invalid,
+      enumerable: true,
+    });
+    throw ex;
+  }
+}
+
+
 module.exports = Object.freeze(Object.assign(optimize, {
   optimize,
+  dumpdct,
   OptimizeError,
   versions: _versions,
   supportsThumbnailStripping: "LIBEXIF_VERSION" in _versions,
