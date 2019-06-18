@@ -461,7 +461,6 @@ NAN_METHOD(dumpdct)
   const auto blen{buf->ByteLength()};
   dec.init(buffer, blen);
   const auto coefs = jpeg_read_coefficients(&dec);
-  auto isolate = Isolate::GetCurrent();
   for (int compNum = 0; compNum < dec.num_components; compNum++) {
     jpeg_component_info* compInfo = &dec.comp_info[compNum];
 
@@ -470,6 +469,7 @@ NAN_METHOD(dumpdct)
 
     const auto len = widthInBlocks * sizeof(JBLOCK);
     for (JDIMENSION rowNum = 0; rowNum < heightInBlocks; rowNum++) {
+      Nan::HandleScope scope;
       const auto rowptr = get_row(&dec, coefs, compNum, rowNum);
       auto outbuf = Nan::CopyBuffer(reinterpret_cast<char*>(*rowptr), len);
       if (outbuf.IsEmpty()) {

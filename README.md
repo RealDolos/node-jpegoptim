@@ -45,10 +45,25 @@ The API is really simple: there is only one function (default export of the modu
  * `@throws RangeError`
  * `@throws OptimizeError`
 
+Moreover, there is a feature to dump the raw dct stream of an image. This allows to e.g. compare image data quickly without the need for full decoding, i.e. two images, e.g. one original and one losslessly optimized should still yield the same DCT stream.
+
+`jpegoptim.dumpdct(buf, func)`
+
+ * `@param {Buffer} buf` Buffer containing the JPEG to dump
+ * `@param {Function} func` callback function receiving the raw dct buffers.
+   The callback function will be called multiple times, usually with a line of blocks.
+   Please note that the buffer func will receive will be reused and thus change
+   between calls. As such, you must copy the buffer if you want to keep the contents.
+   Callback invocations happen only before `dumpdct` returns. The function is synchronous.
+ * `@throws TypeError`
+ * `@throws RangeError`
+ * `@throws OptimizeError`
+
 Additionally `jpegoptim` has the following properties
  * `@property {OptimizeError} OptimizeError` Reference to OptimizeError
  * `@property {Object} versions` Library version of libjpeg etc
  * `@property {Boolean} supportsThumbnailStripping` Does this build support it?
+
  
  See [sample.js](sample.js) for a small program demonstrating the use.
 

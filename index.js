@@ -98,9 +98,11 @@ async function optimize(buf, options = {}) {
  * Please note that the buffer func will receive will be reused and thus change
  * between calls. As such, you must copy the buffer if you want to keep
  * the contents.
+ * Callback invocations happen only before dumpdct returns.
+ * The function is synchronous.
  *
- * @param {Buffer} buf Buffer containing the JPEG to optimize
- * @param {Function} func Buffer receiving the DCT bytes
+ * @param {Buffer} buf Buffer containing the JPEG to dump
+ * @param {Function} func callback function receiving the DCT bytes
  *
  * @throws TypeError
  * @throws RangeError

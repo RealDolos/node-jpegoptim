@@ -159,7 +159,7 @@ describe("dumpdct", function() {
       toThrow("Invalid image data");
   });
   test("dct", function() {
-    for (let i = 0; i < 100; ++i) {
+    for (let i = 0; i < 10; ++i) {
       const h = require("crypto").createHash("sha256");
 
       optim.dumpdct(base, d => {
